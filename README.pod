@@ -153,7 +153,7 @@ This example design was tested with the following version of software:
 
 =item * Bob Jenkins - JHU (faculty adviser) 
 
-=back 1
+=back
 
 Send bug reports to bugs@xess.com.
 
