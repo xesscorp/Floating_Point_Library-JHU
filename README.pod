@@ -1,0 +1,175 @@
+=pod
+
+
+=head1 A SYNTHESIZABLE VHDL FLOATING-POINT PACKAGE
+
+This VHDL package for floating-point arithmetic was originally developed at Johns Hopkins University.
+We expect anyone using this material already understands 
+floating-point arithmetic and the IEEE 32-bit format, and we rely on the documentation in the VHDL file itself to 
+explain the details. The package was developed and tested in our FPGA lab using a XSA-3S1000 development 
+board supplied by the XESS corporation. This boards contains the XILINX XC3S1000-FT256 Spartan3 chips.
+We have not tested with any other chips or boards.
+
+=head1 THE FLOATING-POINT PACKAGE
+
+=head2 Package Contents
+
+The F<FloatPt.vhd> file contains all the components used to implement arithmetic operations with 32-bit IEEE 
+standard floating-point numbers, along with the B<FloatPt> package which contains all the declarations and functions 
+to use the components. The components include B<FPP_MULT> (for multiplication), B<FPP_ADD_SUB> (for addition and subtraction)
+B<FPP_DIV> (for division), and B<MantissaDivision> (mantissa non-restoring division used in the FPP_DIV component).
+The package contains two functions: B<SIGNED_TO_FPP> and B<FPP_TO_SIGNED> for converting I<N>-bit signed vectors to and
+from floating-point numbers, respectively.
+
+=head2 Component Operation
+
+The FPP_MULT, FPP_ADD_SUB and FPP_DIV components use state machines to implement the required arithmetic sequences on two 
+floating-point numbers. We tested these with a 50 MHz clock, and (to be conservative) the mantissa division component at 
+25 MHz. All 3 components wait for an input request signal to go high, carry out their operation, set an output 
+"done" signal high, then wait till the request line goes low to return to the idle state and wait for the next 
+request. This hand-shaking transaction coordinates them with a higher level process and avoids a race condition if they finish 
+quickly.
+
+Floating-point numbers are simply C<std_logic_vectors> that the components interpret as a sign bit, followed by an 8-bit 
+exponent in excess-128 encoding, and a 23-bit mantissa with a leading 1 understood, but not present. Inside the 
+components, the fields are typecast to C<std_logic> unsigned vectors to carry out the necessary arithmetic, and then 
+pasted back together for a final C<std_logic_vector> result. The addition component only performs addition and expects the 
+higher level process supplying the numbers to change the sign of one of the inputs for a subtraction. 
+
+=head2 Resources and Speed
+
+Each of the floating-point components uses the following resources:
+
+=begin html
+
+<table border="1px">
+<tr>
+<td width="10%">Resource</td><td width="20%" align="center">FPP_ADD_SUB</td><td width="20%" align="center">FPP_MULT</td><td width="20%" align="center">FPP_DIV</td>
+</tr>
+<tr>
+<td>Flip Flops</td><td align="center">131</td><td align="center">133</td><td align="center">277</td>
+</tr>
+<tr>
+<td>LUTs</td><td align="center">1279</td><td align="center">171</td><td align="center">603</td>
+</tr>
+<tr>
+<td>MULT 18x18</td><td align="center">0</td><td align="center">4</td><td align="center">0</td>
+</tr>
+<tr>
+<td>BUFGMUX</td><td align="center">1</td><td align="center">1</td><td align="center">2</td>
+</tr>
+</table>
+
+=end html
+
+Particularly in the FP_ADD_SUB component, a good deal of space was used to trade off for a better execution time. This 
+was in the exponent alignment step, and the post-normalization step. Rather than iterate the mantissa shifts 
+needed for these operations, we implemented a single-stage shifter controlled by expanded logic to determine its 
+value (Something like using a barrel shifter). Because of the number of logic levels needed, performing the single shift 
+for each of these steps in a single state machine clock puts some stress on the 20ns clock. So implementations 
+may need some specific path delay constraints. We managed to have it work OK in our filter example by specifying 
+only a 20ns global period constraint. 
+
+The original VHDL code for the FPP_ADD_SUB that iterated the mantissa shifts was commented out, and left in the 
+package for interest. With iteration the FPP_ADD_SUB can take fifty or more clocks depending on the difference 
+in the magnitude of the two arguments. With barrel shifter type logic, the FPP_ADD_SUB completes in 4 clocks like the 
+FPP_MULT. Of course the multiplier speed requires the use of the Spartan 18x18 multiplier primitives for the 
+24-bit multiplies. Without these, there's no way for the FPP_MULT state machine can run at 50 MHz. Since division 
+is inherently slow and iterative, and we were mainly interested in addition and multiplication, we didn't put much effort 
+into speeding it up. This is a possible area of improvement, as well as introducing a multiply-accumulate (MAC) 
+operation.
+
+=head2 Conversion Functions
+
+To be useful, an FPGA system doing floating-point arithmetic needs to be able to convert between 
+floating-point numbers and C<std_logic_vector> fixed-point numbers (which are typically used when interfacing with 
+an ADC or DAC). This requires assuming something about the 
+position of the decimal point in an I<N>-bit signed number. 
+In the interest of simplicity, we just assume the signed numbers are integers and convert them into normalized
+floating-point numbers.
+We have tested this with 16-bit integers, and we believe it will work for any integer less than 24 bits.
+Also, using our convention, converting a floating-point number that is less than one will result in a fixed-point
+number truncated to zero.
+
+=head2 Overflow and Underflow
+
+We left hooks for an overflow output signal in our design, but did not use it in our tests 
+even though we recognize its importance for system debug.
+We simply decided that we would make the result be zero if there was an underflow and make the result be 
+the largest possible number with the correct sign for overflow. This is another area of possible future 
+improvement
+
+=head1 DESIGN EXAMPLE: THIRD-ORDER FILTER
+
+F<LowPassFP3.vhd> contains an example of using the FloatPt package to build a third-order low-pass filter. 
+We used it with our XESS development board to create a system that 
+generated a square wave at selectable frequency ranging from 250 Hz up to 8 KHZ. Then we filtered the square 
+wave 16-bit samples at 43 KHZ, with a 1KHz cutoff. The filtered 16-bit samples were sent out to the codec DAC on 
+the XESS XST-4 board, and we observed the analog speaker output from the codec chip. It was very 
+obvious from this how well the filter was performing.
+
+The filter component is a good illustration of how to interact with the FloatPt package. It instantiates both FPP_ADD_SUB 
+and FPP_MULT components, each driven by a 50 MHz clock. Then a 43 KHz state machine converts 
+the 16-bit signed samples to floating-point format and requests the adds and multiplies needed to compute the Y0 recursive 
+filter output. With seven multiplies and six adds per Y0 output sample, and four 50 MHz clocks for each operation, it 
+should take about 52 or 53 clocks per Y0. This is what we observed in simulations. We were able to implement 
+this in hardware by specifying only a 20 ns global clock period constraint, and a "normal" effort in synthesis 
+and place-and-route. 
+
+We tested the FPP_DIV operation in hardware, but only with a 25 MHz master clock.
+
+
+=head1 DESIGN FILES
+
+=over 4
+
+=item * F<FloatPt.vhd>
+
+Floating-point components and package definition.
+
+=item * F<LowPassFP3.vhd>
+
+Design example that uses the floating-point components to build a third-order low-pass filter.
+
+=back
+
+
+=head1 ENVIRONMENT
+
+This example design was tested with the following version of software:
+
+   Xilinx WebPACK : 13.1
+
+
+=head1 AUTHORS
+
+=over 1
+
+=item * Ryan Fay - JHU (student)
+
+=item * Alex Hsieh - JHU (student)
+
+=item * David Jeang - JHU (student)
+
+=item * Bob Jenkins - JHU (faculty adviser) 
+
+=back 1
+
+Send bug reports to bugs@xess.com.
+
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright 2011 by the Johns Hopkins University ECE department.
+
+This application can be freely distributed and modified
+as long as you do not remove the attributions to the author or his employer.
+
+
+=head1 HISTORY
+
+07/28/2011 - Initial release.
+
+
+
+=cut
